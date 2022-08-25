@@ -16,20 +16,26 @@ import io.ktor.utils.io.core.*
 import kotlinx.coroutines.*
 
 /**
- * Start an http server with [settings] invoking [handler] for every request
+ * Start an http server with [address] socket address invoking [handler] for every request
  */
 @OptIn(InternalAPI::class)
 public fun CoroutineScope.httpServer(
-    settings: HttpServerSettings,
+    address: SocketAddress,
+    connectionIdleTimeoutSeconds: Long = 45,
     handler: HttpRequestHandler
 ): HttpServer {
     val socket = CompletableDeferred<ServerSocket>()
 
     val serverLatch: CompletableJob = Job()
 
+    val coroutineNamePart: String = when (address) {
+        is InetSocketAddress -> address.port.toString()
+        is UnixSocketAddress -> address.path
+    }
+
     @OptIn(ExperimentalCoroutinesApi::class)
     val serverJob = launch(
-        context = CoroutineName("server-root-${settings.port}"),
+        context = CoroutineName("server-root-$coroutineNamePart"),
         start = CoroutineStart.UNDISPATCHED
     ) {
         serverLatch.join()
@@ -37,15 +43,15 @@ public fun CoroutineScope.httpServer(
 
     val selector = SelectorManager(coroutineContext)
     val timeout = WeakTimeoutQueue(
-        settings.connectionIdleTimeoutSeconds * 1000L
+        connectionIdleTimeoutSeconds * 1000L
     )
 
     val logger = KtorSimpleLogger(
         HttpServer::class.simpleName ?: HttpServer::class.qualifiedName ?: HttpServer::class.toString()
     )
 
-    val acceptJob = launch(serverJob + CoroutineName("accept-${settings.port}")) {
-        aSocket(selector).tcp().bind(settings.host, settings.port).use { server ->
+    val acceptJob = launch(serverJob + CoroutineName("accept-$coroutineNamePart")) {
+        aSocket(selector).tcp().bind(address).use { server ->
             socket.complete(server)
 
             val exceptionHandler = coroutineContext[CoroutineExceptionHandler]
@@ -105,3 +111,12 @@ public fun CoroutineScope.httpServer(
 
     return HttpServer(serverJob, acceptJob, socket)
 }
+
+/**
+ * Start an http server with [settings] invoking [handler] for every request
+ */
+@OptIn(InternalAPI::class)
+public fun CoroutineScope.httpServer(
+    settings: HttpServerSettings,
+    handler: HttpRequestHandler
+): HttpServer = httpServer(InetSocketAddress(settings.host, settings.port), settings.connectionIdleTimeoutSeconds, handler)
